@@ -158,7 +158,7 @@ ORDER BY TotalHours DESC;
 SELECT
     YEAR(p.Timestamp) AS [Year],
     COUNT(*) AS Plays,
-    CAST(SUM(p.MsPlayed) / 3600000.0 AS DECIMAL(10,1)) AS Hours
+    SUM(cast(p.MsPlayed AS DECIMAL(10,1))) / 3600000.0 AS Hours
 FROM Play p
 GROUP BY YEAR(p.Timestamp)
 ORDER BY [Year];
