@@ -1,0 +1,24 @@
+# Spotify personal data - NEVER commit
+data/
+
+# Claude Code local settings
+.claude/
+
+# PowerShell temp/helper scripts
+count_records.ps1
+analyze_data.ps1
+
+# IDE / Editor
+.vs/
+.vscode/
+*.suo
+*.user
+*.sln.docstates
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Logs
+*.log
