@@ -1,15 +1,15 @@
-# Spotify Streaming History Import
+# Spotify Personal Data Import
 
-Import your Spotify Extended Streaming History into a normalized SQL Server database for analysis.
+Import all three Spotify personal data packages into a normalized SQL Server database for analysis.
 
 ## Getting Your Data
 
 1. Go to your [Spotify Account Privacy page](https://www.spotify.com/us/account/privacy/)
 2. Request your data packages:
    - **Extended streaming history** - may take up to 30 days to prepare
-   - **Account data** (optional) - can take up to 5 days
-   - **Technical log data** (optional) - can take up to 30 days
-3. Download the ZIP when Spotify emails you and extract it
+   - **Account data** - can take up to 5 days
+   - **Technical log data** - can take up to 30 days
+3. Download each ZIP when Spotify emails you and extract them
 
 ## Prerequisites
 
@@ -21,165 +21,157 @@ Import your Spotify Extended Streaming History into a normalized SQL Server data
 
 ### 1. Place Your Data
 
-Copy your extracted `Spotify Extended Streaming History` folder into the `data/` directory:
+Extract each download into the `data/` directory:
 
 ```
 data/
   Spotify Extended Streaming History/
-    Streaming_History_Audio_2020-2022_0.json
-    Streaming_History_Audio_2022-2023_1.json
-    Streaming_History_Video_2020-2023.json
-    ...
+    Streaming_History_Audio_*.json
+    Streaming_History_Video_*.json
+  Spotify Account Data/
+    Userdata.json, Playlist1.json, YourLibrary.json, ...
+  Spotify Technical Log Information/
+    AddedToCollection.json, SessionCreation.json, ...
 ```
-
-The JSON files follow the naming pattern `Streaming_History_Audio_YYYY-YYYY_N.json` and `Streaming_History_Video_YYYY-YYYY.json`.
 
 ### 2. Create the Database
 
-Run the SQL script to create the `Spotify` database and all tables:
+Run the SQL scripts in order to create the `Spotify` database and all tables:
 
 ```powershell
 sqlcmd -E -i "sql\01_create_database.sql"
+sqlcmd -E -i "sql\03_account_data_tables.sql"
+sqlcmd -E -i "sql\04_technical_log_tables.sql"
 ```
 
-If you're using a named instance (e.g., `SQLEXPRESS`):
-
-```powershell
-sqlcmd -E -S "localhost\SQLEXPRESS" -i "sql\01_create_database.sql"
-```
+For a named instance (e.g., `SQLEXPRESS`), add `-S "localhost\SQLEXPRESS"` to each command.
 
 ### 3. Import Your Data
 
+Run each importer. Order matters - Extended Streaming History first (other importers cross-reference its tracks).
+
 ```powershell
+# 1. Extended Streaming History (run first)
 .\Import-SpotifyData.ps1
+
+# 2. Account Data
+.\Import-AccountData.ps1
+
+# 3. Technical Logs
+.\Import-TechnicalLogs.ps1
 ```
 
-With a named instance:
+Each script accepts `-ServerInstance` and `-DataPath` parameters if your setup differs from defaults.
+
+### 4. Create Views
 
 ```powershell
-.\Import-SpotifyData.ps1 -ServerInstance "localhost\SQLEXPRESS"
+sqlcmd -E -d Spotify -i "sql\05_views.sql"
 ```
 
-Full parameter list:
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `-DataPath` | `.\data\Spotify Extended Streaming History` | Path to your JSON files |
-| `-ServerInstance` | `localhost` | SQL Server instance |
-| `-Database` | `Spotify` | Database name |
-| `-BatchSize` | `1000` | Records per batch (for tuning) |
-
-### 4. Verify
-
-Run the verification script to check record counts and see sample queries:
+### 5. Verify
 
 ```powershell
 sqlcmd -E -d Spotify -i "sql\02_verify_import.sql"
 ```
 
-## Database Schema
+## Data Sources
 
-The data is imported into a normalized star schema:
-
-```
-                    ┌──────────┐
-                    │  Artist  │
-                    └────┬─────┘
-                         │
-              ┌──────────┼──────────┐
-              │          │          │
-         ┌────┴───┐ ┌───┴────┐    │
-         │ Album  │ │ Track  │    │
-         └────────┘ └───┬────┘    │
-                        │         │
-┌────────────┐    ┌─────┴───┐    │
-│PodcastShow │    │  Play   │◄───┘
-└──────┬─────┘    └─┬───┬───┘
-       │            │   │
-┌──────┴───────┐    │   │    ┌───────────┐
-│PodcastEpisode│◄───┘   └───►│ Audiobook │
-└──────────────┘             └─────┬─────┘
-                                   │
-                          ┌────────┴────────┐
-                          │AudiobookChapter │
-                          └─────────────────┘
-```
-
-### Tables
+### Extended Streaming History (`Import-SpotifyData.ps1`)
+Your complete play-by-play listening history with full metadata. Normalized into dimension tables.
 
 | Table | Description |
 |-------|-------------|
-| **Play** | Fact table - one row per stream event (timestamp, duration, platform, etc.) |
-| **Artist** | Distinct artist/band names |
-| **Album** | Albums, linked to their artist |
+| **Play** | Fact table - one row per stream (timestamp, duration, platform, skip/shuffle/offline flags) |
+| **Artist** | Distinct artist names |
+| **Album** | Albums linked to artists |
 | **Track** | Tracks with Spotify URI, linked to album and artist |
 | **PodcastShow** | Podcast show names |
-| **PodcastEpisode** | Episodes with Spotify URI, linked to their show |
-| **Audiobook** | Audiobooks with Spotify URI |
-| **AudiobookChapter** | Chapters with Spotify URI, linked to their audiobook |
+| **PodcastEpisode** | Episodes linked to shows |
+| **Audiobook** / **AudiobookChapter** | Audiobooks and chapters |
 
-### Play Table Fields
+### Account Data (`Import-AccountData.ps1`)
+Profile, playlists, library, search history, and Spotify's ad-targeting inferences about you.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| PlayId | BIGINT | Auto-incrementing primary key |
-| Timestamp | DATETIMEOFFSET | When the stream stopped playing (UTC) |
-| Platform | NVARCHAR(100) | Device/OS used (e.g., "windows", "Android OS 12 API 31") |
-| MsPlayed | INT | Milliseconds the stream was played |
-| ConnCountry | CHAR(2) | Country code where stream was played |
-| IpAddr | VARCHAR(45) | IP address at time of stream |
-| TrackId | INT | FK to Track (null if podcast/audiobook) |
-| EpisodeId | INT | FK to PodcastEpisode (null if music/audiobook) |
-| AudiobookChapterId | INT | FK to AudiobookChapter (null if music/podcast) |
-| ReasonStart | VARCHAR(30) | Why playback started (e.g., "trackdone", "clickrow", "fwdbtn") |
-| ReasonEnd | VARCHAR(30) | Why playback ended (e.g., "trackdone", "endplay", "fwdbtn") |
-| Shuffle | BIT | Whether shuffle was on |
-| Skipped | BIT | Whether the track was skipped |
-| Offline | BIT | Whether played offline |
-| OfflineTimestamp | BIGINT | Unix timestamp for offline playback |
-| IncognitoMode | BIT | Whether private session was active |
-| SourceFile | NVARCHAR(200) | Original JSON filename |
+| Table | Description |
+|-------|-------------|
+| **UserProfile** | Username, email, country, birthdate, creation date |
+| **Follow** | Who you follow, who follows you, who you've blocked |
+| **Inference** | 1,000+ ad-targeting segments Spotify assigns to you |
+| **Marquee** | Spotify's artist engagement classification (Light/Moderate/Previously Active) |
+| **SearchQuery** / **SearchInteraction** | Search history with what you clicked |
+| **Playlist** / **PlaylistTrack** | All playlists with every track, cross-referenced to streaming Track table |
+| **LibraryTrack** / **LibraryAlbum** / **LibraryArtist** | Your saved/liked items |
+| **StreamingHistoryMusic** / **StreamingHistoryPodcast** | Simplified recent streaming history |
+
+### Technical Logs (`Import-TechnicalLogs.ps1`)
+Selected high-value technical events from the 170+ log file types.
+
+| Table | Description |
+|-------|-------------|
+| **CollectionChange** | When tracks/albums were added or removed from your library |
+| **PlaylistChange** | When tracks were added or removed from playlists |
+| **RootlistChange** | When playlists were added or removed from your library |
+| **ShareEvent** | What you shared and where |
+| **PlaybackError** | Playback failures with error codes |
+| **Session** | App session creation events |
+| **AccountActivity** | Account settings page interactions |
+
+## Views
+
+Views combine data across all three sources for meaningful analysis.
+
+### Streaming History Views
+| View | Description |
+|------|-------------|
+| `vw_PlayDetail` | Every play with all dimensions resolved (track, artist, album, episode, audiobook) |
+| `vw_ArtistStats` | Per-artist aggregates: plays, hours, unique tracks/albums, skip rate, date range |
+| `vw_TrackStats` | Per-track aggregates: plays, minutes, skip/shuffle rates |
+| `vw_AlbumStats` | Per-album aggregates |
+| `vw_MonthlyListening` | Year/month breakdown with hours, unique tracks, content type split |
+| `vw_ListeningHeatmap` | Day-of-week x hour-of-day play counts (for heatmap visualizations) |
+| `vw_PlatformStats` | Usage by device/platform |
+| `vw_SkipAnalysis` | Skip behavior by playback end reason |
+| `vw_OfflineListening` | Online vs offline listening by year |
+| `vw_DailyActivity` | Per-day aggregates: plays, hours, unique tracks/artists, active minutes |
+
+### Cross-Source Views
+| View | Description |
+|------|-------------|
+| `vw_ArtistDiscovery` | When you discovered each artist, engagement level, recency, Marquee segment, library status |
+| `vw_ArtistEngagement` | Marquee segments joined with actual listening data and library/follow status |
+| `vw_LibraryListeningStatus` | Which saved tracks you actually play (Active/Inactive/Dormant/Never Played) |
+| `vw_PlaylistTrackActivity` | Playlist tracks matched to streaming history - which ones you actually listen to |
+| `vw_CollectionGrowth` | Library adds/removes over time |
+| `vw_YearlyListeningSummary` | Year-over-year stats: hours, unique tracks/artists/albums, skips, platforms |
+| `vw_SessionActivity` | Sessions correlated with daily listening |
+| `vw_PlaylistOverview` | Playlist summary with track counts and unique artists |
+| `vw_SearchHistory` | Searches with click-through indicator |
 
 ## Example Queries
 
 ```sql
--- Top 10 most played artists by listen time
-SELECT TOP 10
-    a.ArtistName,
-    COUNT(*) AS PlayCount,
-    CAST(SUM(p.MsPlayed) / 3600000.0 AS DECIMAL(10,1)) AS TotalHours
-FROM Play p
-JOIN Track t ON p.TrackId = t.TrackId
-JOIN Artist a ON t.ArtistId = a.ArtistId
-GROUP BY a.ArtistName
-ORDER BY TotalHours DESC;
+-- Yearly listening summary
+SELECT * FROM vw_YearlyListeningSummary ORDER BY [Year];
 
--- Listening by year
-SELECT
-    YEAR(p.Timestamp) AS [Year],
-    COUNT(*) AS Plays,
-    SUM(cast(p.MsPlayed AS DECIMAL(10,1))) / 3600000.0 AS Hours
-FROM Play p
-GROUP BY YEAR(p.Timestamp)
-ORDER BY [Year];
+-- Your top artists with discovery timeline and engagement level
+SELECT TOP 20 ArtistName, DiscoveryYear, TotalHours, EngagementLevel, Recency, MarqueeSegment
+FROM vw_ArtistDiscovery ORDER BY TotalHours DESC;
 
--- Most skipped tracks
-SELECT TOP 10
-    t.TrackName,
-    a.ArtistName,
-    COUNT(*) AS SkipCount
-FROM Play p
-JOIN Track t ON p.TrackId = t.TrackId
-LEFT JOIN Artist a ON t.ArtistId = a.ArtistId
-WHERE p.Skipped = 1
-GROUP BY t.TrackName, a.ArtistName
-ORDER BY SkipCount DESC;
+-- How many of your saved tracks do you actually listen to?
+SELECT ListeningStatus, COUNT(*) AS Tracks
+FROM vw_LibraryListeningStatus GROUP BY ListeningStatus;
+
+-- When do you listen most? (heatmap data)
+SELECT DayOfWeek, HourOfDay, TotalPlays
+FROM vw_ListeningHeatmap ORDER BY DayOfWeekNum, HourOfDay;
+
+-- Playlist tracks you never play
+SELECT PlaylistName, TrackName, ArtistName
+FROM vw_PlaylistTrackActivity
+WHERE TotalPlays = 0 ORDER BY PlaylistName;
 ```
 
 ## Privacy
 
-The `data/` directory is in `.gitignore` and will never be committed. Your streaming history, IP addresses, and other personal data stays local.
-
-## Future Data
-
-This project is designed to grow. Additional Spotify data packages (account data, technical logs) can be added with new SQL scripts and importers as they become available.
+The `data/` directory is in `.gitignore` and will never be committed. Your streaming history, IP addresses, email, and other personal data stays local.
